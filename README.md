@@ -8,13 +8,10 @@ another coding agent's format.
 
 ## Status
 
-`src/rewrite.ts` is a stub. Until it is implemented, the default `rewrite` mode
-stops with a "not implemented" error and the tests in `test/rewrite.test.ts`
-and `test/e2e-rewrite.test.ts` fail by design. `--mode symlink` and `--dry-run
---mode symlink` work now.
-
-Developed and tested on Linux. It uses only `ssh`, `scp` and POSIX `sh`
-features that macOS also ships, but it has not been run on macOS yet.
+Developed and tested on Linux, including real sessions moved between two
+Linux containers over SSH and resumed there in both modes. It uses only `ssh`,
+`scp` and POSIX `sh` features that macOS also ships, but it has not been run on
+macOS yet.
 
 ## Requirements
 
@@ -115,6 +112,26 @@ folder on the source to its folder on the target. Logs refer to saved tool
 results by absolute path, and that folder's name changes with the working
 directory.
 
+#### How the rewrite works
+
+A session log is JSON, so a path can be written with escapes (`\/Users\/testuser`)
+and can sit next to text that only looks like it; a plain find-and-replace
+would miss the first and damage the second. `sessmv` therefore parses every
+record, changes the strings inside it and writes the record back, and a record
+with nothing to change is copied byte-for-byte. Inside a string, a mapped
+prefix is replaced only where it is a whole path prefix: no name, `.` or `~`
+may come right before it (so `/Volumes/backup/Users/testuser` and
+`~/Users/testuser` are left alone), and after it must come a slash, the end of
+the text or punctuation (so `/Users/testuserx` and `/Users/testuser.bak` are
+left alone, while a period that ends a sentence is fine). When two maps could
+apply at the same spot the longer prefix wins, which is what lets the session's
+own folder take its new name while everything else under home follows the home
+map. Replaced text is never looked at again, so one map's output cannot be
+picked up by another. Object keys change only when the whole key is an absolute
+path under a mapped prefix, because checkpoint records use file paths as keys.
+If two keys of the same object would end up identical, `sessmv` stops with an
+error naming the file and line rather than let one entry overwrite the other.
+
 ### symlink
 
 Files are copied byte-for-byte. The old paths then have to exist on the
@@ -156,6 +173,10 @@ synthetic. Do not add real session files: they contain secrets.
 - **Only the conversation moves.** The working tree, uncommitted changes,
   project memory and the rest of `~/.claude` stay where they are. Use the git
   check's output to bring the target's repository to the same state.
+- **Some paths are left as written.** A path glued to a word, such as the
+  compiler flag `-I/Users/testuser/include`, is not recognised, and neither are
+  relative paths or paths of temporary files outside the mapped prefixes. They
+  only appear in old tool output, so the conversation still resumes.
 - **Symlink mode** needs root on the target, and paths that point into the
   session's own folder (saved tool results) do not resolve there, because the
   folder is renamed. On a macOS target `/home` is managed by the system, so a
@@ -172,6 +193,6 @@ synthetic. Do not add real session files: they contain secrets.
 | `src/locate.ts` | Finds a session on the source |
 | `src/target.ts` | One `Target` interface with `ssh` and `local` implementations |
 | `src/git.ts` | Git state on each side and their comparison |
-| `src/rewrite.ts` | Path rewriting (stub) |
+| `src/rewrite.ts` | Path rewriting |
 | `src/copy.ts` | Staging, upload and verification |
 | `src/paths.ts` | Path maps and shell quoting |
