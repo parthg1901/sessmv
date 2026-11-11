@@ -49,7 +49,8 @@ describe("rewrite mode", () => {
     expect(main[3].message.content[0].content).toContain('"/home/tester/proj/app/src/old.ts"');
     expect(main[3].message.content[0].content).toContain("/Volumes/backup/Users/testuser/archive");
     expect(main[3].message.content[0].content).toContain("/Users/testuserx/other/file.ts");
-    expect(Object.keys(main[7].snapshot.trackedFileBackups)).toEqual(["/Users/testuser/proj/app/src/main.ts"]);
+    expect(Object.keys(main[7].snapshot.trackedFileBackups)).toEqual(["/home/tester/proj/app/src/main.ts"]);
+    expect(main[7].snapshot.trackedFileBackups["/home/tester/proj/app/src/main.ts"].realParentDir).toBe("/home/tester/proj/app/src");
 
     const agent = parseJsonl(copied[`${base}/subagents/agent-a1.jsonl`]!);
     expect(agent).toHaveLength(3);
@@ -76,12 +77,12 @@ describe("rewrite mode", () => {
     const source = await makeSourceHome();
     const target = await makeTargetHome();
     const { stdout } = await runCli([SESSION_ID, `local:${target}`, "--map", MAP], source);
-    expect(stdout).toMatch(new RegExp(`${SESSION_ID}\\.jsonl\\s+11 records, 8 rewritten, 18 paths replaced`));
+    expect(stdout).toMatch(new RegExp(`${SESSION_ID}\\.jsonl\\s+11 records, 8 rewritten, 19 paths replaced`));
     expect(stdout).toMatch(/subagents\/agent-a1\.jsonl\s+3 records, 2 rewritten, 4 paths replaced/);
     expect(stdout).toMatch(/subagents\/agent-a1\.meta\.json\s+1 path replaced/);
     expect(stdout).toMatch(/tool-results\/b1\.txt\s+2 paths replaced/);
     expect(stdout).toContain("total: 5 files");
-    expect(stdout).toContain("10 records rewritten, 25 paths replaced");
+    expect(stdout).toContain("10 records rewritten, 26 paths replaced");
     expect(stdout).toContain("copied and verified 5 files");
     expect(stdout).toContain(`cd /home/tester/proj/app && HOME=${target} ${target}/.local/bin/claude --resume ${SESSION_ID}`);
   });
@@ -92,8 +93,34 @@ describe("rewrite mode", () => {
     const scratch = await tempDir("sessmv-tmp-");
     const result = await runCli([SESSION_ID, `local:${target}`, "--map", MAP, "--dry-run"], source, { TMPDIR: scratch });
     expect(result.code).toBe(0);
-    expect(result.stdout).toMatch(/11 records, 8 rewritten, 18 paths replaced/);
+    expect(result.stdout).toMatch(/11 records, 8 rewritten, 19 paths replaced/);
     expect(result.stdout).toContain("nothing was copied");
+    expect(await snapshot(join(target, ".claude"))).toEqual({});
+    expect(await readdir(scratch)).toEqual([]);
+  });
+
+  test("stops before copying when two checkpoint keys would map to the same path", async () => {
+    const id = "cccccccc-dddd-4eee-8fff-000000000000";
+    const source = await tempDir("sessmv-src-");
+    const target = await makeTargetHome();
+    const scratch = await tempDir("sessmv-tmp-");
+    await installFakeClaude(source, "2.1.322");
+    const folder = join(source, ".claude", "projects", "-Users-testuser-proj");
+    await mkdir(folder, { recursive: true });
+    const records = [
+      { type: "user", cwd: "/Users/testuser/proj", sessionId: id },
+      { type: "file-history-snapshot", snapshot: { trackedFileBackups: { "/Users/testuser/a.ts": { version: 1 }, "/Volumes/work/a.ts": { version: 1 } } } },
+    ];
+    await writeFile(join(folder, `${id}.jsonl`), records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+
+    const result = await runCli([id, `local:${target}`, "--map", "/Users/testuser=/srv/shared", "--map", "/Volumes/work=/srv/shared"], source, { TMPDIR: scratch });
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(`cannot rewrite ${id}.jsonl`);
+    expect(result.stderr).toContain("/Users/testuser/a.ts");
+    expect(result.stderr).toContain("/Volumes/work/a.ts");
+    expect(result.stderr).toContain("/srv/shared/a.ts");
+    expect(result.stderr).toContain("line 2");
     expect(await snapshot(join(target, ".claude"))).toEqual({});
     expect(await readdir(scratch)).toEqual([]);
   });

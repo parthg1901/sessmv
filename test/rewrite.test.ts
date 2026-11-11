@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { rewriteJsonl, rewriteString, rewriteValue, type PathMap } from "../src/rewrite.ts";
+import { KeyCollisionError, rewriteJsonl, rewriteString, rewriteValue, type PathMap } from "../src/rewrite.ts";
 import { FIXTURE, LINUX_TO_MAC, MAC_TO_LINUX, parseJsonl, SESSION_ID } from "./helpers.ts";
 
 const toLinux = (input: string) => rewriteString(input, MAC_TO_LINUX).value;
@@ -346,11 +346,11 @@ describe("rewriteValue", () => {
     expect(rewriteValue(42, MAC_TO_LINUX)).toEqual({ value: 42, replacements: 0 });
   });
 
-  test("never rewrites object keys", () => {
-    const input = { "/Users/testuser/proj/a.ts": { realParentDir: "/Users/testuser/proj" } };
+  test("leaves ordinary keys alone", () => {
+    const input = { cwd: "/Users/testuser/proj", Users: 1, testuser: 2 };
     const result = rewriteValue(input, MAC_TO_LINUX);
-    expect(result).toEqual({ value: { "/Users/testuser/proj/a.ts": { realParentDir: "/home/tester/proj" } }, replacements: 1 });
-    expect(Object.keys(result.value)).toEqual(["/Users/testuser/proj/a.ts"]);
+    expect(Object.keys(result.value)).toEqual(["cwd", "Users", "testuser"]);
+    expect(result.replacements).toBe(1);
   });
 
   test("keeps keys in their original order", () => {
@@ -387,6 +387,107 @@ describe("rewriteValue", () => {
       value: { cwd: "/Users/testuser/proj", argv: ["/Users/testuser/.local/bin/tool", "--config", "/home/tester2/c.toml"] },
       replacements: 2,
     });
+  });
+});
+
+describe("rewriteValue: keys that are absolute paths", () => {
+  const rewrite = (input: Record<string, unknown> | unknown[], maps: PathMap[] = MAC_TO_LINUX) => rewriteValue(input, maps);
+
+  test("rewrites a key that is a path below a mapped prefix, and counts it", () => {
+    const input = { "/Users/testuser/proj/a.ts": { realParentDir: "/Users/testuser/proj" } };
+    expect(rewrite(input)).toEqual({ value: { "/home/tester/proj/a.ts": { realParentDir: "/home/tester/proj" } }, replacements: 2 });
+  });
+
+  test("rewrites a key that is the prefix itself", () => {
+    expect(rewrite({ "/Users/testuser": 1 })).toEqual({ value: { "/home/tester": 1 }, replacements: 1 });
+  });
+
+  test.each([
+    ["a relative path", "src/main.ts"],
+    ["a dot-relative path", "./Users/testuser/a.ts"],
+    ["a longer name", "/Users/testuserx/a.ts"],
+    ["a path outside every map", "/opt/tool/a.ts"],
+    ["a path that only contains the prefix", "/Volumes/backup/Users/testuser/a.ts"],
+    ["text that mentions a path", "see /Users/testuser/a.ts"],
+  ])("leaves a key that is %s", (_name, key) => {
+    expect(rewrite({ [key]: 1 })).toEqual({ value: { [key]: 1 }, replacements: 0 });
+  });
+
+  test("a rewritten key keeps its position", () => {
+    const { value } = rewrite({ b: 1, "/Users/testuser/z.ts": 2, a: 3, "/Users/testuser/y.ts": 4 });
+    expect(Object.keys(value)).toEqual(["b", "/home/tester/z.ts", "a", "/home/tester/y.ts"]);
+  });
+
+  test("rewrites keys at any depth, including inside arrays", () => {
+    const input = { snapshot: { trackedFileBackups: { "/Users/testuser/a.ts": { v: 1 } } }, list: [{ "/Users/testuser/b.ts": true }] };
+    expect(rewrite(input)).toEqual({
+      value: { snapshot: { trackedFileBackups: { "/home/tester/a.ts": { v: 1 } } }, list: [{ "/home/tester/b.ts": true }] },
+      replacements: 2,
+    });
+  });
+
+  test("the longest matching prefix wins for keys too", () => {
+    const maps: PathMap[] = [
+      { from: "/Users/testuser", to: "/home/tester" },
+      { from: "/Users/testuser/work", to: "/srv/work" },
+    ];
+    expect(rewrite({ "/Users/testuser/work/a.ts": 1, "/Users/testuser/b.ts": 2 }, maps).value).toEqual({ "/srv/work/a.ts": 1, "/home/tester/b.ts": 2 });
+    expect(rewrite({ "/Users/testuser/work/a.ts": 1 }, [...maps].reverse()).value).toEqual({ "/srv/work/a.ts": 1 });
+  });
+
+  test("works Linux to macOS", () => {
+    expect(rewrite({ "/home/tester/a.ts": 1, "/home/tester2/a.ts": 2 }, LINUX_TO_MAC)).toEqual({
+      value: { "/Users/testuser/a.ts": 1, "/home/tester2/a.ts": 2 },
+      replacements: 1,
+    });
+  });
+
+  test("does not mutate the input's keys", () => {
+    const input = { "/Users/testuser/a.ts": { n: 1 } };
+    rewrite(input);
+    expect(Object.keys(input)).toEqual(["/Users/testuser/a.ts"]);
+  });
+
+  const collide = (input: Record<string, unknown>, maps: PathMap[]): unknown => {
+    try {
+      rewriteValue(input, maps);
+    } catch (err) {
+      return err;
+    }
+    return null;
+  };
+
+  test("fails loudly when two keys map to the same path", () => {
+    const maps: PathMap[] = [
+      { from: "/Users/testuser", to: "/srv/shared" },
+      { from: "/Volumes/work", to: "/srv/shared" },
+    ];
+    const err = collide({ "/Users/testuser/a.ts": 1, "/Volumes/work/a.ts": 2 }, maps);
+    expect(err).toBeInstanceOf(KeyCollisionError);
+    const collision = err as KeyCollisionError;
+    expect([...collision.keys].sort()).toEqual(["/Users/testuser/a.ts", "/Volumes/work/a.ts"]);
+    expect(collision.target).toBe("/srv/shared/a.ts");
+    expect(collision.message).toContain("/Users/testuser/a.ts");
+    expect(collision.message).toContain("/Volumes/work/a.ts");
+    expect(collision.message).toContain("/srv/shared/a.ts");
+  });
+
+  test("fails loudly when a rewritten key lands on a key that was already there", () => {
+    const err = collide({ "/Users/testuser/a.ts": 1, "/home/tester/a.ts": 2 }, MAC_TO_LINUX);
+    expect(err).toBeInstanceOf(KeyCollisionError);
+    expect((err as KeyCollisionError).target).toBe("/home/tester/a.ts");
+    // The order of the two keys in the object must not matter.
+    expect(collide({ "/home/tester/a.ts": 2, "/Users/testuser/a.ts": 1 }, MAC_TO_LINUX)).toBeInstanceOf(KeyCollisionError);
+  });
+
+  test("fails for a collision at any depth", () => {
+    const input = { snapshot: { trackedFileBackups: { "/Users/testuser/a.ts": 1, "/home/tester/a.ts": 2 } } };
+    expect(collide(input, MAC_TO_LINUX)).toBeInstanceOf(KeyCollisionError);
+  });
+
+  test("equal keys in different objects are not a collision", () => {
+    const input = [{ "/Users/testuser/a.ts": 1 }, { "/home/tester/a.ts": 2 }];
+    expect(rewrite(input)).toEqual({ value: [{ "/home/tester/a.ts": 1 }, { "/home/tester/a.ts": 2 }], replacements: 1 });
   });
 });
 
@@ -475,11 +576,40 @@ describe("rewriteJsonl", () => {
     expect(result).toMatchObject({ records: 2, rewritten: 2, replacements: 2 });
   });
 
-  test("works on parsed values, so keys are left alone", () => {
-    const text = '{"trackedFileBackups":{"/Users/testuser/proj/a.ts":{"realParentDir":"/Users/testuser/proj"}}}\n';
+  test("rewrites absolute-path keys and leaves relative ones", () => {
+    const text =
+      '{"trackedFileBackups":{"/Users/testuser/proj/a.ts":{"realParentDir":"/Users/testuser/proj"},"src/b.ts":{"realParentDir":"/Users/testuser/proj/src"}}}\n';
     const result = rewriteJsonl(text, MAC_TO_LINUX);
-    expect(parseJsonl(result.text)).toEqual([{ trackedFileBackups: { "/Users/testuser/proj/a.ts": { realParentDir: "/home/tester/proj" } } }]);
-    expect(result.replacements).toBe(1);
+    const [record] = parseJsonl(result.text);
+    expect(record).toEqual({
+      trackedFileBackups: {
+        "/home/tester/proj/a.ts": { realParentDir: "/home/tester/proj" },
+        "src/b.ts": { realParentDir: "/home/tester/proj/src" },
+      },
+    });
+    expect(Object.keys(record.trackedFileBackups)).toEqual(["/home/tester/proj/a.ts", "src/b.ts"]);
+    expect(result).toMatchObject({ records: 1, rewritten: 1, replacements: 3 });
+  });
+
+  test("a record whose only change is a key counts as rewritten", () => {
+    const result = rewriteJsonl('{"files":{"/Users/testuser/a.ts":1}}\n{"files":{"src/a.ts":1}}\n', MAC_TO_LINUX);
+    expect(result.text).toBe('{"files":{"/home/tester/a.ts":1}}\n{"files":{"src/a.ts":1}}\n');
+    expect(result).toMatchObject({ records: 2, rewritten: 1, replacements: 1 });
+  });
+
+  test("fails loudly on a key collision and says which line", () => {
+    const text = '{"cwd":"/Users/testuser"}\n{"files":{"/Users/testuser/a.ts":1,"/home/tester/a.ts":2}}\n';
+    let err: unknown = null;
+    try {
+      rewriteJsonl(text, MAC_TO_LINUX);
+    } catch (caught) {
+      err = caught;
+    }
+    expect(err).toBeInstanceOf(KeyCollisionError);
+    const collision = err as KeyCollisionError;
+    expect(collision.line).toBe(2);
+    expect(collision.target).toBe("/home/tester/a.ts");
+    expect(collision.message).toContain("line 2");
   });
 
   test("escapes special characters again when writing a record back", () => {
@@ -511,7 +641,7 @@ describe("rewriteJsonl on the fixture session", () => {
 
   test("counts records, rewritten records and replaced paths", async () => {
     const result = rewriteJsonl(await load(), MAC_TO_LINUX);
-    expect(result).toMatchObject({ records: 11, rewritten: 8, replacements: 18, unparsed: 0 });
+    expect(result).toMatchObject({ records: 11, rewritten: 8, replacements: 19, unparsed: 0 });
   });
 
   test("keeps record order and every field name", async () => {
@@ -533,7 +663,7 @@ describe("rewriteJsonl on the fixture session", () => {
     ]);
   });
 
-  test("maps tool inputs and tool outputs, leaving near-misses and keys", async () => {
+  test("maps tool inputs, tool outputs and checkpoint keys, leaving near-misses", async () => {
     const after = parseJsonl(rewriteJsonl(await load(), MAC_TO_LINUX).text);
     expect(after[1].message.content).toBe("Fix the bug in /home/tester/proj/app/src/main.ts and compare it with /home/tester/proj/app/src/old.ts");
     expect(after[2].message.content[1].input).toEqual({ file_path: "/home/tester/proj/app/src/main.ts", limit: 50 });
@@ -543,7 +673,7 @@ describe("rewriteJsonl on the fixture session", () => {
     expect(after[3].toolUseResult.file.filePath).toBe("/home/tester/proj/app/src/main.ts");
     expect(after[4].message.content[0].input.command).toBe("cd /home/tester/proj/app && ls -la src");
     expect(after[7].snapshot.trackedFileBackups).toEqual({
-      "/Users/testuser/proj/app/src/main.ts": {
+      "/home/tester/proj/app/src/main.ts": {
         backupFileName: "abc123@v1",
         version: 1,
         backupTime: "2026-01-05T10:00:07.000Z",
@@ -571,7 +701,7 @@ describe("rewriteJsonl on the fixture session", () => {
     const record = parseJsonl(result.text)[5];
     expect(record.toolUseResult.persistedOutputPath).toBe(expected);
     expect(record.message.content[0].content).toBe(`Output too large (48.2KB). Full output saved to: ${expected}`);
-    expect(result.replacements).toBe(18);
+    expect(result.replacements).toBe(19);
   });
 
   test("going there and back restores every record", async () => {

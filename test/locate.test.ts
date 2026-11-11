@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { LocateError, locateSession } from "../src/locate.ts";
-import { cleanupTempDirs, FIXTURE_CWD, FIXTURE_FOLDER, installFixtureSession, SESSION_ID, tempDir } from "./helpers.ts";
+import { cleanupTempDirs, FIXTURE_CWD, FIXTURE_FOLDER, installFixtureSession, SESSION_ID, setAge, tempDir } from "./helpers.ts";
 
 afterAll(cleanupTempDirs);
 
@@ -18,6 +18,15 @@ describe("locateSession", () => {
     expect(session.mainLog).toBe(join(projectDir, `${SESSION_ID}.jsonl`));
     expect(session.sidecarDir).toBe(join(projectDir, SESSION_ID));
     expect(session.fileHistoryDir).toBe(join(home, ".claude", "file-history", SESSION_ID));
+  });
+
+  test("reports when the log or any sidecar file was last written", async () => {
+    const home = await tempDir();
+    const projectDir = await installFixtureSession(home);
+    const hourAgo = Date.now() - 3600_000;
+    expect(Math.abs((await locateSession(home, SESSION_ID)).lastWriteMs - hourAgo)).toBeLessThan(10_000);
+    await setAge(join(projectDir, SESSION_ID, "tool-results", "b1.txt"), 30);
+    expect(Math.abs((await locateSession(home, SESSION_ID)).lastWriteMs - (Date.now() - 30_000))).toBeLessThan(10_000);
   });
 
   test("reports missing sidecar and file-history as null", async () => {

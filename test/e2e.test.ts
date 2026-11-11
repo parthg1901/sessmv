@@ -16,6 +16,7 @@ import {
   makeTargetHome,
   runCli,
   SESSION_ID,
+  setAge,
   sh,
   snapshot,
   tempDir,
@@ -82,6 +83,35 @@ describe("symlink mode", () => {
     const result = await runCli([SESSION_ID, `local:${target}`, "--mode", "symlink"], source);
     expect(result.code).toBe(0);
     expect(Object.keys(await snapshot(join(target, ".claude", "projects")))).toContain(`-Users-testuser-proj-app/${SESSION_ID}.jsonl`);
+  });
+});
+
+describe("active session", () => {
+  const log = (home: string) => join(home, ".claude", "projects", "-Users-testuser-proj-app", `${SESSION_ID}.jsonl`);
+
+  test("warns when the log was written to moments ago, and still copies", async () => {
+    const source = await makeSourceHome();
+    const target = await makeTargetHome();
+    await setAge(log(source), 5);
+    const result = await runCli(symlinkArgs(target), source);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/WARNING: the session looks active: it was written to \d+s ago/);
+    expect(Object.keys(await snapshot(join(target, ".claude")))).toHaveLength(5);
+  });
+
+  test("a subagent log written moments ago counts too", async () => {
+    const source = await makeSourceHome();
+    const target = await makeTargetHome();
+    await setAge(join(source, ".claude", "projects", "-Users-testuser-proj-app", SESSION_ID, "subagents", "agent-a1.jsonl"), 5);
+    const result = await runCli(symlinkArgs(target, "--dry-run"), source);
+    expect(result.stdout).toContain("the session looks active");
+  });
+
+  test("says nothing for a session that has been idle", async () => {
+    const source = await makeSourceHome();
+    const target = await makeTargetHome();
+    const result = await runCli(symlinkArgs(target), source);
+    expect(result.stdout).not.toContain("looks active");
   });
 });
 

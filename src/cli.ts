@@ -26,6 +26,9 @@ Options:
   -h, --help          Show this help.
 `;
 
+/** A log written to this recently is probably a session that is still open. */
+const ACTIVE_WINDOW_SECONDS = 120;
+
 class UsageError extends Error {}
 class Refusal extends Error {}
 
@@ -222,6 +225,10 @@ async function run(opts: Options): Promise<void> {
   say(`  target cwd     ${targetCwd}`);
   say(`  source folder  ${session.projectDir}`);
   say(`  target folder  ${there.home}/${layout.projectDir}`);
+  const idleSeconds = Math.max(0, Math.round((Date.now() - session.lastWriteMs) / 1000));
+  if (idleSeconds < ACTIVE_WINDOW_SECONDS) {
+    warn(`the session looks active: it was written to ${idleSeconds}s ago. Anything it records after this copy stays on the source only`);
+  }
   if (!session.cwdMatchesFolder) {
     warn(`no record's cwd encodes to the folder name ${session.encodedCwd}; using the first cwd in the log`);
   }

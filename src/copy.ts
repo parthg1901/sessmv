@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { ClaudeCodeStore, type FileKind, type Layout } from "./claude-code-store.ts";
 import type { LocatedSession } from "./locate.ts";
 import { shellQuoteStrict, type PathMap } from "./paths.ts";
-import { rewriteJsonl, rewriteString, rewriteValue } from "./rewrite.ts";
+import { KeyCollisionError, rewriteJsonl, rewriteString, rewriteValue } from "./rewrite.ts";
 import type { Target } from "./target.ts";
 
 export type Mode = "rewrite" | "symlink";
@@ -63,6 +63,15 @@ function decodeUtf8(bytes: Uint8Array): string | null {
 
 /** Rewrite one file from `src` into `dest`. The source is only ever read. */
 async function rewriteFile(src: string, dest: string, rel: string, maps: readonly PathMap[]): Promise<FileReport> {
+  try {
+    return await rewriteFileUnchecked(src, dest, rel, maps);
+  } catch (err) {
+    if (err instanceof KeyCollisionError) throw new Error(`cannot rewrite ${rel}: ${err.message}`);
+    throw err;
+  }
+}
+
+async function rewriteFileUnchecked(src: string, dest: string, rel: string, maps: readonly PathMap[]): Promise<FileReport> {
   const kind = ClaudeCodeStore.fileKind(rel);
   const bytes = new Uint8Array(await Bun.file(src).arrayBuffer());
   await mkdir(dirname(dest), { recursive: true });

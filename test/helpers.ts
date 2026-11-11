@@ -1,4 +1,4 @@
-import { chmod, cp, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -41,7 +41,20 @@ export async function installFixtureSession(home: string, folder = FIXTURE_FOLDE
   await cp(join(FIXTURE, "subagents"), join(projectDir, SESSION_ID, "subagents"), { recursive: true });
   await cp(join(FIXTURE, "tool-results"), join(projectDir, SESSION_ID, "tool-results"), { recursive: true });
   await cp(join(FIXTURE, "file-history"), join(home, ".claude", "file-history", SESSION_ID), { recursive: true });
+  await setAge(join(projectDir, `${SESSION_ID}.jsonl`), 3600);
+  await setAge(join(projectDir, SESSION_ID), 3600);
   return projectDir;
+}
+
+/** Make a file, or every file below a directory, look as if it was last written `seconds` ago. */
+export async function setAge(path: string, seconds: number): Promise<void> {
+  const entries = await readdir(path, { withFileTypes: true }).catch(() => null);
+  if (entries) {
+    for (const entry of entries) await setAge(join(path, entry.name), seconds);
+    return;
+  }
+  const when = new Date(Date.now() - seconds * 1000);
+  await utimes(path, when, when);
 }
 
 /** A fake source home holding the fixture session and a fake claude. */
