@@ -1,48 +1,92 @@
 # sessmv
 
-Copy a Claude Code session from one machine to another over SSH, so that
-`claude --resume <session-id>` on the target continues the same conversation.
+[![CI](https://github.com/parthg1901/sessmv/actions/workflows/ci.yml/badge.svg)](https://github.com/parthg1901/sessmv/actions/workflows/ci.yml)
 
-It moves sessions between machines only. It does not convert a session to
-another coding agent's format.
-
-## Status
-
-Developed and tested on Linux, including real sessions moved between two
-Linux containers over SSH and resumed there in both modes. It uses only `ssh`,
-`scp` and POSIX `sh` features that macOS also ships, but it has not been run on
-macOS yet.
+A Claude Code conversation lives on the machine where it ran, in files full of
+that machine's paths, so you cannot simply pick it up on another computer.
+`sessmv` copies one session to another machine over SSH and adjusts the paths
+on the way, so that `claude --resume <session-id>` there carries on the same
+conversation: start a task on your laptop, continue it on a server. It moves
+sessions between machines only; it does not convert them to another coding
+agent's format.
 
 ## Requirements
 
-- [Bun](https://bun.sh) on the machine you run it from
+- **[Bun](https://bun.sh) 1.1 or later** on the machine you run it from.
+  `sessmv` is TypeScript that uses Bun's own APIs; it does not run on Node.js.
 - `ssh` and `scp` (OpenSSH), with the target reachable non-interactively
 - The same Claude Code version on both machines
+
+It has been used from macOS to a Linux server and between Linux machines.
 
 ## Install
 
 ```sh
-bun install
-ln -s "$PWD/src/cli.ts" ~/.local/bin/sessmv   # or run it as: bun src/cli.ts
+bun add -g sessmv     # or skip installing and run it with: bunx sessmv
 ```
 
 ## Usage
 
 ```
-sessmv <session-id> <ssh-host | local:<dir>> [--map <from>=<to> ...] [--mode rewrite|symlink] [--dry-run] [--force]
+bunx sessmv <session-id> <ssh-host | local:<dir>> [--map <from>=<to> ...] [--mode rewrite|symlink] [--dry-run] [--force]
 ```
 
 Send a session from a Mac to a server known to SSH as `myserver`:
 
 ```sh
-sessmv 6f1c2a9e-0d3b-4c57-9e21-7b5a4d8c1f02 myserver --dry-run   # look first
-sessmv 6f1c2a9e-0d3b-4c57-9e21-7b5a4d8c1f02 myserver
+bunx sessmv 6f1c2a9e-0d3b-4c57-9e21-7b5a4d8c1f02 myserver --dry-run   # look first
+bunx sessmv 6f1c2a9e-0d3b-4c57-9e21-7b5a4d8c1f02 myserver
 ```
 
 The last lines of the output are the command to continue the conversation:
 
 ```sh
 ssh -t myserver 'cd /home/tester/proj && ~/.local/bin/claude --resume 6f1c2a9e-0d3b-4c57-9e21-7b5a4d8c1f02'
+```
+
+### Example
+
+A dry run of a made-up session. The target is `local:/home/tester`, a
+directory standing in for the other machine's home, so no SSH is involved:
+
+```
+$ bunx sessmv 11111111-2222-4333-8444-555555555555 local:/home/tester --dry-run
+sessmv 11111111-2222-4333-8444-555555555555 -> local:/home/tester  (rewrite mode, dry run)
+
+Session
+  source cwd     /Users/testuser/proj/app
+  target cwd     /home/tester/proj/app
+  source folder  /Users/testuser/.claude/projects/-Users-testuser-proj-app
+  target folder  /home/tester/.claude/projects/-home-tester-proj-app
+
+Path maps
+  /Users/testuser -> /home/tester
+  /Users/testuser/.claude/projects/-Users-testuser-proj-app -> /home/tester/.claude/projects/-home-tester-proj-app  (session folder, added automatically)
+
+Version check
+  ok: Claude Code 2.1.322 on both machines
+
+Git check
+  source  main @ 2ff9406d70b8 (dirty)  git@github.com:example/app.git
+  target  main @ 2ff9406d70b8  https://github.com/example/app.git
+  WARNING: source has uncommitted changes in /Users/testuser/proj/app; they are not part of the move
+
+Files
+  11111111-2222-4333-8444-555555555555.jsonl                         11 records, 8 rewritten, 18 paths replaced
+  11111111-2222-4333-8444-555555555555/subagents/agent-a1.jsonl      3 records, 2 rewritten, 4 paths replaced
+  11111111-2222-4333-8444-555555555555/subagents/agent-a1.meta.json  1 path replaced
+  11111111-2222-4333-8444-555555555555/tool-results/b1.txt           2 paths replaced
+  checkpoints: 1 file, 39 B (never rewritten)
+  total: 5 files, 4.9 KB, 10 records rewritten, 25 paths replaced
+
+Dry run
+  nothing was copied
+
+1 warning
+  - source has uncommitted changes in /Users/testuser/proj/app; they are not part of the move
+
+After a real run, resume with
+  cd /home/tester/proj/app && HOME=/home/tester /home/tester/.local/bin/claude --resume 11111111-2222-4333-8444-555555555555
 ```
 
 | Option | Meaning |
@@ -160,12 +204,17 @@ right place or is taken by something else.
 machine, so the whole flow runs without a network:
 
 ```sh
-sessmv <session-id> local:/tmp/fake-home --dry-run
+bunx sessmv <session-id> local:/tmp/fake-home --dry-run
 ```
 
+To work on `sessmv` itself:
+
 ```sh
+git clone https://github.com/parthg1901/sessmv.git && cd sessmv
+bun install
 bun test            # unit and end-to-end tests
 bun run typecheck
+bun src/cli.ts --help
 ```
 
 The tests build a fake source home from small hand-written fixtures in
