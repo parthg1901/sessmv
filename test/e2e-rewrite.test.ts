@@ -1,6 +1,6 @@
 /**
- * End to end in the default rewrite mode. These fail until src/rewrite.ts is
- * implemented; the symlink-mode flow is covered by e2e.test.ts.
+ * End to end in the default rewrite mode. The symlink-mode flow is covered by
+ * e2e.test.ts.
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, readdir, writeFile } from "node:fs/promises";

@@ -6,7 +6,6 @@ import { copyToTarget, existingOnTarget, prepare, type FileReport, type Mode, ty
 import { compareGit, gitState } from "./git.ts";
 import { LocateError, locateSession } from "./locate.ts";
 import { mapPath, normalizeDir, parseMapArg, shellQuote, shellQuoteStrict, type PathMap } from "./paths.ts";
-import { NotImplementedError } from "./rewrite.ts";
 import { LocalTarget, parseKeyValues, parseTarget, type Target } from "./target.ts";
 
 const USAGE = `Usage: sessmv <session-id> <ssh-host | local:<dir>> [options]
@@ -321,10 +320,6 @@ export async function main(argv: string[]): Promise<number> {
     if (err instanceof UsageError) {
       console.error(`sessmv: ${err.message}`);
       return 2;
-    }
-    if (err instanceof NotImplementedError) {
-      console.error(`sessmv: ${err.message}. Rewrite mode needs it; --mode symlink works without it.`);
-      return 1;
     }
     if (err instanceof Refusal || err instanceof LocateError) {
       console.error(`sessmv: ${err.message}`);

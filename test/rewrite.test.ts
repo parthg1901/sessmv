@@ -1,7 +1,6 @@
 /**
- * Specification for src/rewrite.ts, which is still a stub: every test here
- * fails until it is implemented. `test.todo` entries mark cases whose right
- * answer is a judgement call and is deliberately left open.
+ * Specification for src/rewrite.ts. Cases whose right answer is a judgement
+ * call are marked "Decided" with the rule that was chosen.
  */
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
@@ -71,7 +70,29 @@ describe("rewriteString: the end of the prefix must be a path boundary", () => {
     expect(rewriteString(input, MAC_TO_LINUX)).toEqual({ value: expected, replacements: 1 });
   });
 
-  test.todo("decide: a trailing period ('I am in /Users/testuser.') is a sentence end, but '/Users/testuser.bak' is another path");
+  // Decided: dots after the prefix end the path unless a name or a slash follows them.
+  test.each([
+    ["at the end of a sentence", "I am in /Users/testuser.", "I am in /home/tester."],
+    ["before the next sentence", "Open /Users/testuser. Then run ls.", "Open /home/tester. Then run ls."],
+    ["in an ellipsis", "somewhere under /Users/testuser...", "somewhere under /home/tester..."],
+    ["before a closing quote", 'It said "/Users/testuser".', 'It said "/home/tester".'],
+    ["before a line break", "cwd is /Users/testuser.\nnext", "cwd is /home/tester.\nnext"],
+  ])("matches when followed by a period %s", (_name, input, expected) => {
+    expect(rewriteString(input, MAC_TO_LINUX)).toEqual({ value: expected, replacements: 1 });
+  });
+
+  test.each([
+    ["an extension", "/Users/testuser.tar.gz"],
+    ["a name after two dots", "/Users/testuser..old/proj"],
+    ["a slash", "/Users/testuser./proj"],
+    ["a non-ASCII name", "/Users/testuser.é"],
+  ])("does not match when the period is followed by %s", (_name, input) => {
+    expect(rewriteString(input, MAC_TO_LINUX)).toEqual({ value: input, replacements: 0 });
+  });
+
+  test("a period after a longer path is handled the same way", () => {
+    expect(toLinux("Edited /Users/testuser/proj/a.ts. Done.")).toBe("Edited /home/tester/proj/a.ts. Done.");
+  });
 });
 
 describe("rewriteString: the prefix must start a path", () => {
@@ -109,7 +130,30 @@ describe("rewriteString: the prefix must start a path", () => {
     });
   });
 
-  test.todo("decide: a prefix after a variable ('$ROOT/Users/testuser', '${ROOT}/Users/testuser') is probably another path");
+  // Decided: a prefix glued to a name is the middle of another path; one after a bracket is not.
+  test.each([
+    ["a shell variable", "$ROOT/Users/testuser/notes.md"],
+    ["a variable ending in a digit", "$DIR2/Users/testuser/notes.md"],
+    ["a variable ending in an underscore", "$ROOT_/Users/testuser/notes.md"],
+  ])("does not match after %s", (_name, input) => {
+    expect(rewriteString(input, MAC_TO_LINUX)).toEqual({ value: input, replacements: 0 });
+  });
+
+  test.each([
+    ["JSON output", '{"ok":true}/Users/testuser/proj', '{"ok":true}/home/tester/proj'],
+    ["a closing paren", "(done)/Users/testuser/proj", "(done)/home/tester/proj"],
+    ["a closing bracket", "[1/3]/Users/testuser/proj", "[1/3]/home/tester/proj"],
+    // Accepted cost of the rule above: these cannot be told apart from output run together.
+    ["a braced variable", "${ROOT}/Users/testuser/notes.md", "${ROOT}/home/tester/notes.md"],
+    ["a command substitution", "$(pwd)/Users/testuser/notes.md", "$(pwd)/home/tester/notes.md"],
+  ])("matches straight after %s", (_name, input, expected) => {
+    expect(rewriteString(input, MAC_TO_LINUX)).toEqual({ value: expected, replacements: 1 });
+  });
+
+  test("still matches a variable assignment and a path inside a substitution", () => {
+    expect(toLinux("ROOT=/Users/testuser; ls $ROOT")).toBe("ROOT=/home/tester; ls $ROOT");
+    expect(toLinux("$(cat /Users/testuser/a.txt)")).toBe("$(cat /home/tester/a.txt)");
+  });
 });
 
 describe("rewriteString: several paths in one string", () => {
@@ -440,6 +484,13 @@ describe("rewriteValue: keys that are absolute paths", () => {
       value: { "/Users/testuser/a.ts": 1, "/home/tester2/a.ts": 2 },
       replacements: 1,
     });
+  });
+
+  test("keeps a __proto__ key as ordinary data", () => {
+    const input = JSON.parse('{"__proto__":{"cwd":"/Users/testuser"},"a":1}');
+    const { value } = rewriteValue(input, MAC_TO_LINUX);
+    expect(Object.keys(value)).toEqual(["__proto__", "a"]);
+    expect(JSON.stringify(value)).toBe('{"__proto__":{"cwd":"/home/tester"},"a":1}');
   });
 
   test("does not mutate the input's keys", () => {

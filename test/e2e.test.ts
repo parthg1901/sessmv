@@ -1,7 +1,7 @@
 /**
  * End to end through the real CLI: a fake source HOME built from fixtures and
- * a `local:<tmpdir>` target. These use symlink mode (byte-for-byte), so they
- * pass while src/rewrite.ts is a stub; rewrite mode is in e2e-rewrite.test.ts.
+ * a `local:<tmpdir>` target. These use symlink mode (byte-for-byte); rewrite
+ * mode is in e2e-rewrite.test.ts.
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
