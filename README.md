@@ -221,6 +221,13 @@ The tests build a fake source home from small hand-written fixtures in
 `test/fixtures` and run the CLI against `local:` targets. Fixtures are
 synthetic. Do not add real session files: they contain secrets.
 
+## Releasing
+
+Pushing a tag `vX.Y.Z` that matches the version in `package.json` runs the
+tests and publishes that version to npm, through
+`.github/workflows/release.yml`. It uses npm trusted publishing, so no npm
+token is stored in the repository.
+
 ## Limitations
 
 - **One-way.** The session is copied, not synchronised. After you resume on the
