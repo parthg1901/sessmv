@@ -185,6 +185,9 @@ synthetic. Do not add real session files: they contain secrets.
   compiler flag `-I/Users/testuser/include`, is not recognised, and neither are
   relative paths or paths of temporary files outside the mapped prefixes. They
   only appear in old tool output, so the conversation still resumes.
+- **File contents keep naming the source machine.** Paths inside file contents
+  are left as written, while `Bash` output is rewritten, so a `cat` of a file
+  that contains a mapped path can disagree with the file on disk.
 - **Symlink mode** needs root on the target, and paths that point into the
   session's own folder (saved tool results) do not resolve there, because the
   folder is renamed. On a macOS target `/home` is managed by the system, so a
