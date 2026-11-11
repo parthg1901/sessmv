@@ -3,10 +3,33 @@
   "version": "0.1.0",
   "description": "Copy a Claude Code session from one machine to another over SSH",
   "type": "module",
-  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/parthg1901/sessmv.git"
+  },
+  "homepage": "https://github.com/parthg1901/sessmv#readme",
+  "bugs": {
+    "url": "https://github.com/parthg1901/sessmv/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "session",
+    "ssh",
+    "cli",
+    "agents"
+  ],
+  "engines": {
+    "bun": ">=1.1"
+  },
   "bin": {
     "sessmv": "src/cli.ts"
   },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit"
