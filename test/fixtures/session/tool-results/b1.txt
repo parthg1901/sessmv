@@ -1,0 +1,3 @@
+/Users/testuser/proj/app/src/main.ts:12: error TS2322: type mismatch
+/Users/testuser/proj/app/src/old.ts:3: warning: unused import
+see also /Users/testuserx/unrelated.log
