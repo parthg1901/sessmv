@@ -687,6 +687,61 @@ describe("rewriteJsonl", () => {
   });
 });
 
+describe("fields the caller asks to keep", () => {
+  const keepBody = (_holder: object, key: string) => key === "body";
+
+  test("rewriteValue passes a kept property through untouched and rewrites its siblings", () => {
+    const input = { path: "/Users/testuser/a.txt", body: "see /Users/testuser/b.txt", note: "in /Users/testuser" };
+    expect(rewriteValue(input, MAC_TO_LINUX, keepBody)).toEqual({
+      value: { path: "/home/tester/a.txt", body: "see /Users/testuser/b.txt", note: "in /home/tester" },
+      replacements: 2,
+    });
+  });
+
+  test("a kept property is not looked into, whatever it holds", () => {
+    const body = { lines: ["/Users/testuser/a"], "/Users/testuser/key": { deep: "/Users/testuser/b" } };
+    const input = { body, list: [{ body: "/Users/testuser/c", path: "/Users/testuser/d" }] };
+    const result = rewriteValue(input, MAC_TO_LINUX, keepBody);
+    expect(result.value.body).toBe(body);
+    expect(result).toEqual({ value: { body, list: [{ body: "/Users/testuser/c", path: "/home/tester/d" }] }, replacements: 1 });
+  });
+
+  test("the decision is made per object, so the same key can be kept in one place and rewritten in another", () => {
+    const special = { body: "/Users/testuser/keep" };
+    const input = { first: special, second: { body: "/Users/testuser/rewrite" } };
+    const result = rewriteValue(input, MAC_TO_LINUX, (holder, key) => holder === special && key === "body");
+    expect(result.value).toEqual({ first: { body: "/Users/testuser/keep" }, second: { body: "/home/tester/rewrite" } });
+  });
+
+  test("without a keep function nothing is kept", () => {
+    expect(rewriteValue({ body: "/Users/testuser/a" }, MAC_TO_LINUX).value).toEqual({ body: "/home/tester/a" });
+  });
+
+  test("rewriteJsonl asks once per record and keeps what it is told to", () => {
+    const text = '{"path":"/Users/testuser/a","body":"/Users/testuser/b"}\n{"body":"/Users/testuser/c"}\n{"path":"/Users/testuser/d"}\n';
+    const seen: unknown[] = [];
+    const result = rewriteJsonl(text, MAC_TO_LINUX, (record) => {
+      seen.push(record);
+      return keepBody;
+    });
+    expect(seen).toHaveLength(3);
+    expect(result.text).toBe('{"path":"/home/tester/a","body":"/Users/testuser/b"}\n{"body":"/Users/testuser/c"}\n{"path":"/home/tester/d"}\n');
+    expect(result).toMatchObject({ records: 3, rewritten: 2, replacements: 2 });
+  });
+
+  test("a record whose only paths are in kept fields comes out byte-for-byte and is not counted", () => {
+    const line = '{"body" : "/Users/testuser/c", "n":1.50}';
+    const result = rewriteJsonl(`${line}\n`, MAC_TO_LINUX, () => keepBody);
+    expect(result.text).toBe(`${line}\n`);
+    expect(result).toMatchObject({ records: 1, rewritten: 0, replacements: 0 });
+  });
+
+  test("a record may keep nothing", () => {
+    const result = rewriteJsonl('{"body":"/Users/testuser/c"}\n', MAC_TO_LINUX, () => undefined);
+    expect(result.text).toBe('{"body":"/home/tester/c"}\n');
+  });
+});
+
 describe("rewriteJsonl on the fixture session", () => {
   const load = () => Bun.file(join(FIXTURE, "main.jsonl")).text();
 

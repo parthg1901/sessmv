@@ -2,7 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { ClaudeCodeStore, type Install } from "../src/claude-code-store.ts";
 import { LocalTarget, SshTarget } from "../src/target.ts";
-import { cleanupTempDirs, installFakeClaude, SESSION_ID, tempDir } from "./helpers.ts";
+import { rewriteJsonl } from "../src/rewrite.ts";
+import { cleanupTempDirs, installFakeClaude, MAC_TO_LINUX, parseJsonl, SESSION_ID, tempDir, TOOL_FIXTURE } from "./helpers.ts";
 
 afterAll(cleanupTempDirs);
 
@@ -154,5 +155,132 @@ describe("resumeCommand", () => {
     expect(new SshTarget("myserver").resumeCommand("/home/tester/proj/app", command)).toBe(
       `ssh -t myserver 'cd /home/tester/proj/app && ~/.local/bin/claude --resume ${SESSION_ID}'`,
     );
+  });
+});
+
+describe("locations are rewritten, file contents are not", () => {
+  const OLD = "/Users/testuser/demo";
+  const NEW = "/home/tester/demo";
+  const load = async () => {
+    const text = await Bun.file(TOOL_FIXTURE).text();
+    const result = rewriteJsonl(text, MAC_TO_LINUX, ClaudeCodeStore.contentGuard(text));
+    return { before: parseJsonl(text), after: parseJsonl(result.text), result, text };
+  };
+
+  test("Write: file_path moves, content stays, in the message and in the wire copy", async () => {
+    const { after } = await load();
+    const expected = { file_path: `${NEW}/summary.txt`, content: `notes live at ${OLD}/notes.txt\n` };
+    expect(after[1].message.content[0].input).toEqual(expected);
+    expect(after[1].wireToolInputs.toolu_w1).toEqual(expected);
+  });
+
+  test("Write result: the confirmation and filePath move, the recorded content stays", async () => {
+    const { after } = await load();
+    expect(after[2].message.content[0].content).toBe(`File created successfully at: ${NEW}/summary.txt`);
+    expect(after[2].toolUseResult).toMatchObject({ filePath: `${NEW}/summary.txt`, content: `notes live at ${OLD}/notes.txt\n` });
+  });
+
+  test("Read: file_path moves, the text it returned stays", async () => {
+    const { after } = await load();
+    expect(after[3].message.content[0].input).toEqual({ file_path: `${NEW}/summary.txt` });
+    expect(after[4].message.content[0].content).toBe(`1\tnotes live at ${OLD}/notes.txt`);
+    expect(after[4].toolUseResult.file).toEqual({
+      filePath: `${NEW}/summary.txt`,
+      content: `notes live at ${OLD}/notes.txt\n`,
+      numLines: 1,
+      startLine: 1,
+      totalLines: 1,
+    });
+  });
+
+  test("Edit: file_path moves, old_string and new_string stay, also in the result", async () => {
+    const { after, before } = await load();
+    const input = { replace_all: false, file_path: `${NEW}/summary.txt`, old_string: `notes live at ${OLD}/notes.txt`, new_string: `notes: ${OLD}/notes.txt` };
+    expect(after[5].message.content[0].input).toEqual(input);
+    expect(after[5].wireToolInputs.toolu_e1).toEqual(input);
+    expect(after[6].message.content[0].content).toBe(`The file ${NEW}/summary.txt has been updated successfully.`);
+    expect(after[6].toolUseResult).toEqual({ ...before[6].toolUseResult, filePath: `${NEW}/summary.txt` });
+  });
+
+  test("Bash: the command and its output keep the generic behaviour", async () => {
+    const { after } = await load();
+    expect(after[7].message.content[0].input.command).toBe(`ls -la ${NEW}`);
+    expect(after[7].wireToolInputs.toolu_b1.command).toBe(`ls -la ${NEW}`);
+    expect(after[8].message.content[0].content).toBe(`${NEW}:\nnotes.txt\nsummary.txt`);
+    expect(after[8].toolUseResult.stdout).toBe(`${NEW}:\nnotes.txt\nsummary.txt`);
+  });
+
+  test("a failed Read is an error message about a location, so it is rewritten", async () => {
+    const { after } = await load();
+    expect(after[10].message.content[0].content).toBe(`File does not exist. Note: your current working directory is ${NEW}.`);
+    expect(after[10].toolUseResult).toBe(`Error: File does not exist. Note: your current working directory is ${NEW}.`);
+  });
+
+  test("MultiEdit edits and NotebookEdit new_source stay; notebook_path and Grep/Glob path move", async () => {
+    const { after } = await load();
+    const inputs = after[11].message.content.map((block: any) => block.input);
+    expect(inputs[0]).toEqual({ file_path: `${NEW}/summary.txt`, edits: [{ old_string: `${OLD}/notes.txt`, new_string: `${OLD}/notes.md` }] });
+    expect(inputs[1]).toEqual({ notebook_path: `${NEW}/nb.ipynb`, new_source: `open('${OLD}/notes.txt')` });
+    expect(inputs[2]).toEqual({ pattern: "notes", path: NEW });
+    expect(inputs[3]).toEqual({ pattern: "**/*.txt", path: NEW });
+  });
+
+  test("a field called content on some other tool is not file content", async () => {
+    const { after } = await load();
+    expect(after[11].message.content[4].input).toEqual({ content: `stored under ${NEW}` });
+  });
+
+  test("request-blob copies follow the same rules", async () => {
+    const { after } = await load();
+    expect(after[12].message.content[0].input).toEqual({ file_path: `${NEW}/summary.txt`, content: `notes live at ${OLD}/notes.txt\n` });
+    expect(after[13].message.content[0].content).toEqual([{ type: "text", text: `1\tnotes live at ${OLD}/notes.txt` }]);
+  });
+
+  test("a file attached to a prompt: its name moves, its text stays", async () => {
+    const { after } = await load();
+    expect(after[14].attachment.filename).toBe(`${NEW}/notes.txt`);
+    expect(after[14].attachment.content.file).toMatchObject({ filePath: `${NEW}/notes.txt`, content: `see ${OLD}/summary.txt\n` });
+  });
+
+  test("every record's cwd moves", async () => {
+    const { after } = await load();
+    expect(after.filter((r) => "cwd" in r).map((r) => r.cwd)).toEqual(Array(13).fill(NEW));
+  });
+
+  test("the generic rewrite, without the guard, is what changed the file contents", async () => {
+    const { text } = await load();
+    const generic = parseJsonl(rewriteJsonl(text, MAC_TO_LINUX).text);
+    expect(generic[1].message.content[0].input.content).toBe(`notes live at ${NEW}/notes.txt\n`);
+    expect(generic[4].message.content[0].content).toBe(`1\tnotes live at ${NEW}/notes.txt`);
+  });
+
+  test("toolNames indexes every tool call by id", async () => {
+    const { text } = await load();
+    const names = ClaudeCodeStore.toolNames(text);
+    expect(names.get("toolu_w1")).toBe("Write");
+    expect(names.get("toolu_r1")).toBe("Read");
+    expect(names.get("toolu_x1")).toBe("mcp__notes__save");
+    expect(names.size).toBe(10);
+  });
+
+  test("contentFields names what it found", async () => {
+    const { text, before } = await load();
+    const names = ClaudeCodeStore.toolNames(text);
+    const what = (index: number) => ClaudeCodeStore.contentFields(before[index], names).map((f) => f.what);
+    expect(what(0)).toEqual([]);
+    expect(what(1)).toEqual(["Write content", "Write content (wire copy)"]);
+    expect(what(2)).toEqual(["Write toolUseResult content", "Write toolUseResult originalFile", "Write toolUseResult structuredPatch"]);
+    expect(what(4)).toEqual(["Read result text", "Read toolUseResult file content"]);
+    expect(what(5)).toEqual(["Edit old_string", "Edit new_string", "Edit old_string (wire copy)", "Edit new_string (wire copy)"]);
+    expect(what(8)).toEqual([]);
+    expect(what(10)).toEqual([]);
+    expect(what(11)).toEqual(["MultiEdit edits", "NotebookEdit new_source"]);
+    expect(what(14)).toEqual(["attached file content"]);
+  });
+
+  test("a result whose tool call is not in the log keeps the generic behaviour", () => {
+    const record = { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_unknown", content: `1\t${OLD}/a.txt` }] } };
+    const text = JSON.stringify(record) + "\n";
+    expect(parseJsonl(rewriteJsonl(text, MAC_TO_LINUX, ClaudeCodeStore.contentGuard(text)).text)[0].message.content[0].content).toBe(`1\t${NEW}/a.txt`);
   });
 });

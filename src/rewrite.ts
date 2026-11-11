@@ -17,7 +17,12 @@
  *  - When several maps match at the same position the longest `from` wins,
  *    whatever order the maps are given in.
  *  - Output is never scanned again, so /a -> /b plus /b -> /c turns /a/x into /b/x.
+ *  - A caller can name fields to keep (see Keep). Their values are passed
+ *    through untouched, however many paths they contain.
  *  - Inputs are never mutated.
+ *
+ * This module knows nothing about any particular log format. Which fields
+ * hold file contents is the caller's knowledge, supplied through Keep.
  */
 import { mapPath, type PathMap } from "./paths.ts";
 
@@ -37,6 +42,12 @@ export class KeyCollisionError extends Error {
     this.name = "KeyCollisionError";
   }
 }
+
+/**
+ * Says whether one property of one object must be kept exactly as it is:
+ * `holder[key]` is then copied through without looking inside it.
+ */
+export type Keep = (holder: object, key: string) => boolean;
 
 export interface StringRewrite {
   value: string;
@@ -138,13 +149,13 @@ function replacePaths(input: string, ordered: readonly PathMap[]): StringRewrite
   return replacements === 0 ? { value: input, replacements } : { value: output + input.slice(copied), replacements };
 }
 
-function rewriteNode(node: unknown, ordered: readonly PathMap[], count: { replacements: number }): unknown {
+function rewriteNode(node: unknown, ordered: readonly PathMap[], count: { replacements: number }, keep?: Keep): unknown {
   if (typeof node === "string") {
     const result = replacePaths(node, ordered);
     count.replacements += result.replacements;
     return result.value;
   }
-  if (Array.isArray(node)) return node.map((item) => rewriteNode(item, ordered, count));
+  if (Array.isArray(node)) return node.map((item) => rewriteNode(item, ordered, count, keep));
   if (node === null || typeof node !== "object") return node;
 
   const entries: [string, unknown][] = [];
@@ -156,7 +167,7 @@ function rewriteNode(node: unknown, ordered: readonly PathMap[], count: { replac
     if (earlier !== undefined) throw new KeyCollisionError([earlier, key], newKey);
     originalOf.set(newKey, key);
     if (newKey !== key) count.replacements++;
-    entries.push([newKey, rewriteNode(child, ordered, count)]);
+    entries.push([newKey, keep?.(node, key) ? child : rewriteNode(child, ordered, count, keep)]);
   }
   // fromEntries keeps the order and, unlike assignment, stores a "__proto__" key as plain data.
   return Object.fromEntries(entries);
@@ -174,11 +185,11 @@ export function rewriteString(input: string, maps: readonly PathMap[]): StringRe
  * Deep-copy a parsed JSON value with rewriteString applied to every string
  * value at any depth, and absolute-path keys mapped. Key order is preserved.
  * Throws KeyCollisionError when two keys of one object become equal. Also used
- * on *.meta.json.
+ * on *.meta.json. Properties that `keep` accepts are left exactly as they are.
  */
-export function rewriteValue<T>(value: T, maps: readonly PathMap[]): ValueRewrite<T> {
+export function rewriteValue<T>(value: T, maps: readonly PathMap[], keep?: Keep): ValueRewrite<T> {
   const count = { replacements: 0 };
-  const rewritten = rewriteNode(value, longestFirst(maps), count) as T;
+  const rewritten = rewriteNode(value, longestFirst(maps), count, keep) as T;
   return { value: rewritten, replacements: count.replacements };
 }
 
@@ -189,8 +200,9 @@ export function rewriteValue<T>(value: T, maps: readonly PathMap[]): ValueRewrit
  * replacements is emitted byte-for-byte as it came in, and so is a line that
  * does not parse. The text is never search-and-replaced as a whole. A key
  * collision is rethrown as a KeyCollisionError carrying the record's line.
+ * `keepFor` is asked once per record which of its fields to keep.
  */
-export function rewriteJsonl(text: string, maps: readonly PathMap[]): JsonlRewrite {
+export function rewriteJsonl(text: string, maps: readonly PathMap[], keepFor?: (record: unknown) => Keep | undefined): JsonlRewrite {
   const ordered = longestFirst(maps);
   const totals = { records: 0, rewritten: 0, replacements: 0, unparsed: 0 };
 
@@ -208,7 +220,7 @@ export function rewriteJsonl(text: string, maps: readonly PathMap[]): JsonlRewri
     const count = { replacements: 0 };
     let rewritten: unknown;
     try {
-      rewritten = rewriteNode(record, ordered, count);
+      rewritten = rewriteNode(record, ordered, count, keepFor?.(record));
     } catch (err) {
       if (err instanceof KeyCollisionError) throw new KeyCollisionError(err.keys, err.target, index + 1);
       throw err;

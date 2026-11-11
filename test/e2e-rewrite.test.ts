@@ -6,7 +6,21 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ClaudeCodeStore } from "../src/claude-code-store.ts";
-import { cleanupTempDirs, FIXTURE, installFakeClaude, makeSourceHome, makeTargetHome, parseJsonl, runCli, SESSION_ID, snapshot, tempDir } from "./helpers.ts";
+import {
+  cleanupTempDirs,
+  FIXTURE,
+  installFakeClaude,
+  installToolSession,
+  makeSourceHome,
+  makeTargetHome,
+  parseJsonl,
+  runCli,
+  SESSION_ID,
+  snapshot,
+  tempDir,
+  TOOL_FIXTURE,
+  TOOL_SESSION_ID,
+} from "./helpers.ts";
 
 afterAll(cleanupTempDirs);
 
@@ -46,7 +60,9 @@ describe("rewrite mode", () => {
       "/home/tester/proj/app/src",
     ]);
     expect(main[2].message.content[1].input.file_path).toBe("/home/tester/proj/app/src/main.ts");
-    expect(main[3].message.content[0].content).toContain('"/home/tester/proj/app/src/old.ts"');
+    // The text a Read returned is file content: it must come through exactly as recorded.
+    expect(main[3].message.content[0].content).toBe(original[3].message.content[0].content);
+    expect(main[3].toolUseResult.file.filePath).toBe("/home/tester/proj/app/src/main.ts");
     expect(main[3].message.content[0].content).toContain("/Volumes/backup/Users/testuser/archive");
     expect(main[3].message.content[0].content).toContain("/Users/testuserx/other/file.ts");
     expect(Object.keys(main[7].snapshot.trackedFileBackups)).toEqual(["/home/tester/proj/app/src/main.ts"]);
@@ -77,12 +93,12 @@ describe("rewrite mode", () => {
     const source = await makeSourceHome();
     const target = await makeTargetHome();
     const { stdout } = await runCli([SESSION_ID, `local:${target}`, "--map", MAP], source);
-    expect(stdout).toMatch(new RegExp(`${SESSION_ID}\\.jsonl\\s+11 records, 8 rewritten, 19 paths replaced`));
+    expect(stdout).toMatch(new RegExp(`${SESSION_ID}\\.jsonl\\s+11 records, 8 rewritten, 18 paths replaced`));
     expect(stdout).toMatch(/subagents\/agent-a1\.jsonl\s+3 records, 2 rewritten, 4 paths replaced/);
     expect(stdout).toMatch(/subagents\/agent-a1\.meta\.json\s+1 path replaced/);
     expect(stdout).toMatch(/tool-results\/b1\.txt\s+2 paths replaced/);
     expect(stdout).toContain("total: 5 files");
-    expect(stdout).toContain("10 records rewritten, 26 paths replaced");
+    expect(stdout).toContain("10 records rewritten, 25 paths replaced");
     expect(stdout).toContain("copied and verified 5 files");
     expect(stdout).toContain(`cd /home/tester/proj/app && HOME=${target} ${target}/.local/bin/claude --resume ${SESSION_ID}`);
   });
@@ -93,10 +109,40 @@ describe("rewrite mode", () => {
     const scratch = await tempDir("sessmv-tmp-");
     const result = await runCli([SESSION_ID, `local:${target}`, "--map", MAP, "--dry-run"], source, { TMPDIR: scratch });
     expect(result.code).toBe(0);
-    expect(result.stdout).toMatch(/11 records, 8 rewritten, 19 paths replaced/);
+    expect(result.stdout).toMatch(/11 records, 8 rewritten, 18 paths replaced/);
     expect(result.stdout).toContain("nothing was copied");
     expect(await snapshot(join(target, ".claude"))).toEqual({});
     expect(await readdir(scratch)).toEqual([]);
+  });
+
+  test("moves locations but leaves file contents as the files on disk have them", async () => {
+    const source = await tempDir("sessmv-src-");
+    const target = await makeTargetHome();
+    await installFakeClaude(source, "2.1.322");
+    await installToolSession(source);
+
+    const result = await runCli([TOOL_SESSION_ID, `local:${target}`, "--map", "/Users/testuser=/home/tester"], source);
+
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+    const copied = await snapshot(join(target, ".claude", "projects"));
+    expect(Object.keys(copied)).toEqual([`-home-tester-demo/${TOOL_SESSION_ID}.jsonl`]);
+    const before = parseJsonl(await Bun.file(TOOL_FIXTURE).text());
+    const after = parseJsonl(copied[`-home-tester-demo/${TOOL_SESSION_ID}.jsonl`]!);
+
+    // The bug: a Write whose content names a mapped path, and the Read that returned it.
+    expect(after[1].message.content[0].input).toEqual({
+      file_path: "/home/tester/demo/summary.txt",
+      content: "notes live at /Users/testuser/demo/notes.txt\n",
+    });
+    expect(after[4].message.content[0].content).toBe("1\tnotes live at /Users/testuser/demo/notes.txt");
+    expect(after[4].toolUseResult.file.content).toBe("notes live at /Users/testuser/demo/notes.txt\n");
+    // Edits keep their text too, and locations still move.
+    expect(after[5].message.content[0].input.old_string).toBe(before[5].message.content[0].input.old_string);
+    expect(after[5].message.content[0].input.file_path).toBe("/home/tester/demo/summary.txt");
+    expect(after[7].message.content[0].input.command).toBe("ls -la /home/tester/demo");
+    expect(after.filter((r) => "cwd" in r).every((r) => r.cwd === "/home/tester/demo")).toBe(true);
+    expect(result.stdout).toMatch(new RegExp(`${TOOL_SESSION_ID}\\.jsonl\\s+15 records, 14 rewritten, 40 paths replaced`));
   });
 
   test("stops before copying when two checkpoint keys would map to the same path", async () => {

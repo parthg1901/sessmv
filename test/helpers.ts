@@ -9,6 +9,11 @@ export const SESSION_ID = "11111111-2222-4333-8444-555555555555";
 export const FIXTURE_CWD = "/Users/testuser/proj/app";
 export const FIXTURE_FOLDER = "-Users-testuser-proj-app";
 
+/** A second fixture: one record of each kind of Claude Code tool call, for locations vs contents. */
+export const TOOL_FIXTURE = join(import.meta.dir, "fixtures", "tool-session.jsonl");
+export const TOOL_SESSION_ID = "22222222-3333-4444-8555-666666666666";
+export const TOOL_FOLDER = "-Users-testuser-demo";
+
 export const MAC_TO_LINUX = [{ from: "/Users/testuser", to: "/home/tester" }];
 export const LINUX_TO_MAC = [{ from: "/home/tester", to: "/Users/testuser" }];
 
@@ -55,6 +60,16 @@ export async function setAge(path: string, seconds: number): Promise<void> {
   }
   const when = new Date(Date.now() - seconds * 1000);
   await utimes(path, when, when);
+}
+
+/** Lay the tool-record fixture out under <home>/.claude as a session of its own. */
+export async function installToolSession(home: string): Promise<string> {
+  const projectDir = join(home, ".claude", "projects", TOOL_FOLDER);
+  await mkdir(projectDir, { recursive: true });
+  const log = join(projectDir, `${TOOL_SESSION_ID}.jsonl`);
+  await cp(TOOL_FIXTURE, log);
+  await setAge(log, 3600);
+  return log;
 }
 
 /** A fake source home holding the fixture session and a fake claude. */

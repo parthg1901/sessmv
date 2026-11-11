@@ -98,6 +98,14 @@ inside string values, at path boundaries: `/Users/testuser` matches
 search-and-replaced as text. The same is applied to subagent logs, their
 metadata files and saved tool results. Record order and every field are kept.
 
+Locations are rewritten, file contents are not. Where a file is (`file_path`,
+`cwd`, a `Bash` command, the path a search ran in) has to change, because the
+file now lives somewhere else. What a file says (the text a `Write` or `Edit`
+put into it, the text a `Read` got back, a file attached to a prompt) is copied
+exactly as recorded, even when it contains a mapped path: the files themselves
+are not changed by the move, so rewriting their recorded contents would make
+the history disagree with the disk.
+
 Object keys are left alone unless the whole key is an absolute path under a
 mapped prefix. Checkpoint records key their entries by file path, and those
 keys have to follow the files. If two keys of one object would become the same
@@ -189,7 +197,7 @@ synthetic. Do not add real session files: they contain secrets.
 | File | Role |
 | --- | --- |
 | `src/cli.ts` | Argument parsing, the six steps, the summary |
-| `src/claude-code-store.ts` | Everything specific to Claude Code: storage layout, the encoded-cwd rule, version check, resume command |
+| `src/claude-code-store.ts` | Everything specific to Claude Code: storage layout, the encoded-cwd rule, version check, resume command, which record fields hold file contents |
 | `src/locate.ts` | Finds a session on the source |
 | `src/target.ts` | One `Target` interface with `ssh` and `local` implementations |
 | `src/git.ts` | Git state on each side and their comparison |

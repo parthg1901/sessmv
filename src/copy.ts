@@ -85,7 +85,8 @@ async function rewriteFileUnchecked(src: string, dest: string, rel: string, maps
   if (text === null) return verbatim("not valid UTF-8, copied as-is");
 
   if (kind === "jsonl") {
-    const result = rewriteJsonl(text, maps);
+    // Locations are rewritten; file contents recorded in the log are not.
+    const result = rewriteJsonl(text, maps, ClaudeCodeStore.contentGuard(text));
     await Bun.write(dest, result.text);
     return {
       rel,

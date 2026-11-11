@@ -12,6 +12,7 @@
  */
 import { join } from "node:path";
 import { normalizeDir, shellQuote, type PathMap } from "./paths.ts";
+import type { Keep } from "./rewrite.ts";
 import { parseKeyValues, type Target } from "./target.ts";
 
 /** Absolute paths of one session's parts under a home directory. */
@@ -42,9 +43,42 @@ export interface Install {
   version: string | null;
 }
 
+/** One field of a record that holds file contents, not a location. */
+export interface ContentField {
+  holder: object;
+  key: string;
+  /** What it is, for reports: "Write content", "Read result text", ... */
+  what: string;
+}
+
 export type VersionCheck = { ok: true; summary: string } | { ok: false; problem: string };
 
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * Tool inputs that are file contents, by tool name. Every other input
+ * (file_path, notebook_path, path, command, ...) is a location or a command
+ * and is rewritten. Write and Edit were checked against real 2.1.322 logs;
+ * MultiEdit and NotebookEdit follow their documented inputs.
+ */
+const CONTENT_INPUTS: Record<string, readonly string[]> = {
+  Write: ["content"],
+  Edit: ["old_string", "new_string"],
+  MultiEdit: ["edits"],
+  NotebookEdit: ["new_source"],
+};
+
+/** The same contents as an editing tool's record keeps them in `toolUseResult`, next to `filePath`. */
+const CONTENT_RESULTS = ["content", "oldString", "newString", "originalFile", "structuredPatch"];
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** The content blocks of a record's message; assistant, user and request-blob records all use this shape. */
+function blocksOf(record: unknown): Record<string, unknown>[] {
+  if (!isObject(record) || !isObject(record.message) || !Array.isArray(record.message.content)) return [];
+  return record.message.content.filter(isObject);
+}
 
 // ~/.local/bin is not on PATH in a non-interactive SSH session, so look there first.
 const INSPECT_SCRIPT = `
@@ -143,6 +177,89 @@ export const ClaudeCodeStore = {
    */
   selfMap(sourceProjectDir: string, targetHome: string, encodedTargetCwd: string): PathMap {
     return { from: sourceProjectDir, to: `${targetHome}/${relativeLayout(encodedTargetCwd, "x").projectDir}` };
+  },
+
+  /** Tool name for every tool call in a log, by call id. A result only carries the id. */
+  toolNames(logText: string): Map<string, string> {
+    const names = new Map<string, string>();
+    for (const line of logText.split("\n")) {
+      if (!line.includes('"tool_use"')) continue;
+      let record: unknown;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      for (const block of blocksOf(record)) {
+        if (block.type === "tool_use" && typeof block.id === "string" && typeof block.name === "string") {
+          names.set(block.id, block.name);
+        }
+      }
+    }
+    return names;
+  },
+
+  /**
+   * The fields of one record that hold file contents. A path inside file
+   * contents is what the file says, and the file itself is not changed by the
+   * move, so rewriting it would make the history disagree with the disk.
+   *
+   * Contents are stored in several places, all covered here:
+   *  - the tool call's input, in the message and again in `wireToolInputs`
+   *    (and in request-blob copies of the message);
+   *  - the text a Read returned, in the tool result and in `toolUseResult.file`;
+   *  - what an editing tool wrote, in `toolUseResult`;
+   *  - a file attached to a prompt.
+   */
+  contentFields(record: unknown, toolNames: ReadonlyMap<string, string>): ContentField[] {
+    const found: ContentField[] = [];
+    const add = (holder: unknown, key: string, what: string) => {
+      if (isObject(holder) && key in holder) found.push({ holder, key, what });
+    };
+    const addInputs = (tool: unknown, input: unknown, where: string) => {
+      if (typeof tool !== "string") return;
+      for (const key of CONTENT_INPUTS[tool] ?? []) add(input, key, `${tool} ${key}${where}`);
+    };
+
+    let resultTool: string | undefined; // the tool this record is the result of, if any
+    for (const block of blocksOf(record)) {
+      if (block.type === "tool_use") addInputs(block.name, block.input, "");
+      if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
+        resultTool = toolNames.get(block.tool_use_id);
+        // A failed Read returns an error message about a location, not file text.
+        if (resultTool === "Read" && block.is_error !== true) add(block, "content", "Read result text");
+      }
+    }
+    if (!isObject(record)) return found;
+
+    if (isObject(record.wireToolInputs)) {
+      for (const [id, input] of Object.entries(record.wireToolInputs)) addInputs(toolNames.get(id), input, " (wire copy)");
+    }
+    const result = record.toolUseResult;
+    if (isObject(result) && resultTool === "Read") add(result.file, "content", "Read toolUseResult file content");
+    if (isObject(result) && resultTool !== undefined && resultTool in CONTENT_INPUTS) {
+      for (const key of CONTENT_RESULTS) add(result, key, `${resultTool} toolUseResult ${key}`);
+    }
+    const attachment = record.attachment;
+    if (isObject(attachment) && attachment.type === "file" && isObject(attachment.content)) {
+      add(attachment.content.file, "content", "attached file content");
+    }
+    return found;
+  },
+
+  /**
+   * For rewriteJsonl: given a whole log, returns the per-record decision of
+   * which fields to keep untouched.
+   */
+  contentGuard(logText: string): (record: unknown) => Keep | undefined {
+    const toolNames = ClaudeCodeStore.toolNames(logText);
+    return (record) => {
+      const fields = ClaudeCodeStore.contentFields(record, toolNames);
+      if (fields.length === 0) return undefined;
+      const kept = new Map<object, Set<string>>();
+      for (const field of fields) kept.set(field.holder, (kept.get(field.holder) ?? new Set()).add(field.key));
+      return (holder, key) => kept.get(holder)?.has(key) ?? false;
+    };
   },
 
   parseVersion(text: string | undefined): string | null {
